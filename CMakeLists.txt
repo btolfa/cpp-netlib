@@ -4,31 +4,30 @@
 # (See accompanying file LICENSE_1_0.txt or copy at
 # http://www.boost.org/LICENSE_1_0.txt)
 
-cmake_minimum_required(VERSION 2.8)
-project(CPP-NETLIB)
+cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
+project(CPP-NETLIB CXX)
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(CPP-NETLIB_STANDALONE ON)
+else()
+  set(CPP-NETLIB_STANDALONE OFF)
+endif()
 
 option( CPP-NETLIB_BUILD_SHARED_LIBS "Build cpp-netlib as shared libraries." OFF )
-option( CPP-NETLIB_BUILD_TESTS "Build the cpp-netlib project tests." ON)
+option( CPP-NETLIB_BUILD_TESTS "Build the cpp-netlib project tests." ${CPP-NETLIB_STANDALONE})
 # option( CPP-NETLIB_BUILD_EXPERIMENTS "Build the cpp-netlib project experiments." ON)
-option( CPP-NETLIB_BUILD_EXAMPLES "Build the cpp-netlib project examples." ON)
+option( CPP-NETLIB_BUILD_EXAMPLES "Build the cpp-netlib project examples." ${CPP-NETLIB_STANDALONE})
 option( CPP-NETLIB_ENABLE_HTTPS "Build cpp-netlib with support for https if OpenSSL is found." ON)
 option( CPP-NETLIB_STATIC_OPENSSL "Build cpp-netlib using static OpenSSL" OFF)
 option( CPP-NETLIB_STATIC_BOOST "Build cpp-netlib using static Boost" OFF)
 
-include(GNUInstallDirs)
+# This is the interface library for global settings, flags, options and definitions,
+# which have not be propagated to dependent targets. It's a good place for warning level flags.
+add_library(cppnetlib-BuildSettings INTERFACE)
 
-# determine install path for CMake config files
-if(WIN32 AND NOT CYGWIN)
-    set(DEF_INSTALL_CMAKE_DIR CMake)
-else()
-    set(DEF_INSTALL_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/cppnetlib)
-endif()
-set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
-
-# Make relative cmake install path absolute (needed later on)
-if(NOT IS_ABSOLUTE "${INSTALL_CMAKE_DIR}")
-    set(INSTALL_CMAKE_DIR "${CMAKE_INSTALL_PREFIX}/${INSTALL_CMAKE_DIR}")
-endif()
+# This is the interface library for global settings, flags, option and definitions which
+# have to be propagated to dependent targets.
+add_library(cppnetlib-headeronly INTERFACE)
 
 if(CPP-NETLIB_BUILD_SHARED_LIBS OR BUILD_SHARED_LIBS)
   message (STATUS "Linking boost testing libs dynamically...")
@@ -45,12 +44,12 @@ if (CPP-NETLIB_STATIC_BOOST)
 endif()
 
 # We need this for all tests to use the dynamic version.
-add_definitions(-DBOOST_TEST_DYN_LINK)
+target_compile_definitions(cppnetlib-BuildSettings INTERFACE BOOST_TEST_DYN_LINK)
 
 # Always use multi-threaded Boost libraries.
 set(Boost_USE_MULTI_THREADED ON)
 
-find_package(Boost 1.58.0 REQUIRED COMPONENTS system thread)
+find_package(Boost 1.58.0 REQUIRED COMPONENTS system thread OPTIONAL_COMPONENTS regex program_options)
 
 if (CPP-NETLIB_ENABLE_HTTPS)
  if (APPLE)
@@ -70,108 +69,68 @@ if (CPP-NETLIB_ENABLE_HTTPS)
    endif()
  endif()
  if (CPP-NETLIB_STATIC_OPENSSL)
-   set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
  endif()
- find_package(OpenSSL)
+
+ find_package(OpenSSL REQUIRED)
+ target_compile_definitions(cppnetlib-headeronly INTERFACE BOOST_NETWORK_ENABLE_HTTPS)
+ target_link_libraries(cppnetlib-headeronly INTERFACE OpenSSL::SSL)
 endif()
 
-find_package( Threads )
-set(CMAKE_VERBOSE_MAKEFILE true)
+find_package(Threads)
 
 set(CPPNETLIB_VERSION_MAJOR 0) # MUST bump this whenever we make ABI-incompatible changes
 set(CPPNETLIB_VERSION_MINOR 12)
 set(CPPNETLIB_VERSION_PATCH 0)
 set(CPPNETLIB_VERSION_STRING ${CPPNETLIB_VERSION_MAJOR}.${CPPNETLIB_VERSION_MINOR}.${CPPNETLIB_VERSION_PATCH})
 
-if (CMAKE_BUILD_TYPE MATCHES Debug)
-    add_definitions(-DBOOST_NETWORK_DEBUG)
+target_compile_definitions(cppnetlib-BuildSettings INTERFACE $<$<CONFIG:Debug>:BOOST_NETWORK_DEBUG>)
+
+target_compile_features(cppnetlib-BuildSettings INTERFACE cxx_std_14)
+target_compile_options(cppnetlib-BuildSettings INTERFACE $<$<AND:$<CONFIG:DEBUG>,$<CXX_COMPILER_ID:GNU>>:-Wall>)
+target_compile_options(cppnetlib-BuildSettings INTERFACE $<$<AND:$<CONFIG:DEBUG>,$<CXX_COMPILER_ID:Clang>>:-Wall>)
+
+target_compile_options(cppnetlib-headeronly INTERFACE $<$<AND:$<CONFIG:DEBUG>,$<CXX_COMPILER_ID:Clang>>:-ftemplate-depth=256>)
+target_compile_options(cppnetlib-headeronly INTERFACE $<$<PLATFORM_ID:Darwin>:-stdlib=libc++>)
+if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+  set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lc++")
 endif()
 
-if (OPENSSL_FOUND)
-    add_definitions(-DBOOST_NETWORK_ENABLE_HTTPS)
-    include_directories(${OPENSSL_INCLUDE_DIR})
-endif()
+target_compile_options(cppnetlib-BuildSettings INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
-if (${CMAKE_CXX_COMPILER_ID} MATCHES GNU)
-  # Use C++11 when using GNU compilers.
-  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -std=c++11")
-elseif (${CMAKE_CXX_COMPILER_ID} MATCHES Clang)
-  # We want to link in C++11 mode in Clang too, but also set a high enough
-  # template depth for the template metaprogramming.
-  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -ftemplate-depth=256 -std=c++11")
-  if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    # Use libc++ only in OS X.
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lc++")
+target_compile_definitions(cppnetlib-headeronly INTERFACE $<$<CXX_COMPILER_ID:MSVC>:_SCL_SECURE_NO_WARNINGS>)
+target_compile_definitions(cppnetlib-headeronly INTERFACE $<$<PLATFORM_ID:Windows>:BOOST_USE_WINAPI_VERSION=0x0601 _WIN32_WINNT=0x0601>)
+
+target_include_directories(cppnetlib-headeronly INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cppnetlib-headeronly INTERFACE 
+  Boost::system
+  Boost::thread)
+
+add_subdirectory(libs/network/src)
+if (CPP-NETLIB_BUILD_TESTS)
+  enable_testing()
+
+  if (MSVC)
+    set(gtest_force_shared_crt ON CACHE BOOL "Use shared (DLL) run-time lib even when Google Test is built as static lib.")
   endif()
-endif()
+  add_subdirectory(deps/googletest)
+  target_compile_definitions(gtest PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING>)
+  target_compile_definitions(gtest_main PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING>)
+  target_compile_definitions(gmock PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING>)
+  target_compile_definitions(gmock_main PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING>)
 
+  add_subdirectory(libs/network/test)
+endif ()
 
-if (MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
-    set(gtest_force_shared_crt true)
-endif()
+add_library(cppnetlib::cppnetlib ALIAS cppnetlib-headeronly)
+add_library(cppnetlib::client-connections ALIAS cppnetlib-client-connections)
+add_library(cppnetlib::server-parsers ALIAS cppnetlib-server-parsers)
+add_library(cppnetlib::uri ALIAS cppnetlib-uri)
 
-if (Boost_FOUND)
-    if (MSVC)
-      add_definitions(-D_SCL_SECURE_NO_WARNINGS)
-    endif(MSVC)
-    if (WIN32)
-      add_definitions(-D_WIN32_WINNT=0x0501)
-    endif(WIN32)
-    include_directories(${Boost_INCLUDE_DIRS})
-    link_directories(${Boost_LIBRARY_DIRS})
+if (CPP-NETLIB_BUILD_EXAMPLES)
 
-    enable_testing()
-    add_subdirectory(libs/network/src)
-    if (CPP-NETLIB_BUILD_TESTS)
-      add_subdirectory(deps/googletest)
-      add_subdirectory(libs/network/test)
-    endif (CPP-NETLIB_BUILD_TESTS)
-    if (CPP-NETLIB_BUILD_EXAMPLES)
-      add_subdirectory(libs/network/example)
-    endif (CPP-NETLIB_BUILD_EXAMPLES)
-endif(Boost_FOUND)
+  add_library(cxxopts INTERFACE)
+  target_include_directories(cxxopts INTERFACE deps/cxxopts/src)
 
-enable_testing()
-
-set(CPP-NETLIB_LIBRARIES ${Boost_LIBRARIES} CACHE INTERNAL "Dependent libraries for header-only use")
-
-install(DIRECTORY boost DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-
-###
-## Export Targets
-# (so cpp-netlib can be easily used by other CMake projects)
-# [see http://www.cmake.org/Wiki/CMake/Tutorials/How_to_create_a_ProjectConfig.cmake_file]
-
-# Add all targets to the build-tree export set
-export(TARGETS cppnetlib-client-connections cppnetlib-server-parsers cppnetlib-uri
-    FILE "${PROJECT_BINARY_DIR}/cppnetlibTargets.cmake")
-# Export the package for use from the build-tree
-# (this registers the build-tree with a global CMake-registry)
-export(PACKAGE cppnetlib)
-# Create the cppnetlibConfig.cmake and cppnetlibConfigVersion files
-file(RELATIVE_PATH REL_INCLUDE_DIR "${INSTALL_CMAKE_DIR}"
-    "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
-# ... for the build tree
-set(CONF_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}" ${Boost_INCLUDE_DIRS})
-configure_file(cppnetlibConfig.cmake.in
-    "${PROJECT_BINARY_DIR}/cppnetlibConfig.cmake" @ONLY)
-# ... for the install tree
-set(CONF_INCLUDE_DIRS "\${CPPNETLIB_CMAKE_DIR}/${REL_INCLUDE_DIR}")
-set(CONF_INCLUDE_DIRS ${CONF_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
-configure_file(cppnetlibConfig.cmake.in
-    "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/cppnetlibConfig.cmake" @ONLY)
-# ... for both
-configure_file(cppnetlibConfigVersion.cmake.in
-    "${PROJECT_BINARY_DIR}/cppnetlibConfigVersion.cmake" @ONLY)
-# Install the cppnetlibConfig.cmake and cppnetlibConfigVersion.cmake
-install(FILES
-    "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/cppnetlibConfig.cmake"
-    "${PROJECT_BINARY_DIR}/cppnetlibConfigVersion.cmake"
-    DESTINATION "${INSTALL_CMAKE_DIR}"
-    COMPONENT dev)
-# Install the export set for use with the install-tree
-install(EXPORT cppnetlibTargets
-    DESTINATION "${INSTALL_CMAKE_DIR}"
-    COMPONENT dev)
+  add_subdirectory(libs/network/example)
+endif ()
